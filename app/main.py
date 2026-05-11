@@ -1,6 +1,7 @@
+import uuid
 from fastapi import FastAPI, UploadFile, File, HTTPException
-from .schemas import FetalMeasurements
-from .agent import generate_perinatology_report
+from .schemas import FetalMeasurements, AnalysisResponse
+from .agent import generate_smart_report
 from .audio_processor import transcribe_audio
 
 app = FastAPI()
@@ -9,17 +10,22 @@ app = FastAPI()
 def read_root():
     return {
         "entorno": "Perinato-AI Node",
-        "fase": 2,
+        "fase": 4,
         "status": "Ready",
         "agente_ia": "Online"
     }
 
-@app.post("/analyze")
+@app.post("/analyze", response_model=AnalysisResponse)
 async def analyze_ultrasound(data: FetalMeasurements):
-    report = generate_perinatology_report(data)
+    report_id = str(uuid.uuid4())[:8]
+
+    report = await generate_smart_report(data)
+
     return {
         "status": "success",
-        "report": report
+        "report_id": report_id,
+        "summary": report["summary"],
+        "recommendation": report["recommendation"]
     }
 
 @app.post("/upload-audio")

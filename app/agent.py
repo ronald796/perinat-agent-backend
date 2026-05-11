@@ -1,43 +1,47 @@
-import math
+import os
+import httpx
+from .schemas import FetalMeasurements
 
 def calculate_hadlock_efw(bpd, ac, fl):
-    """Calcula el peso fetal estimado usando la fórmula de Hadlock"""
-    # Convertimos mm a cm para la fórmula
-    b = bpd / 10
-    a = ac / 10
-    f = fl / 10
-
-    # Fórmula de Hadlock: Log10 BW = 1.335 - 0.0034AC(FL) + 0.0316BPD + 0.0457AC + 0.190FL
+    import math
+    b, a, f = bpd / 10, ac / 10, fl / 10
     log10_bw = 1.335 - (0.0034 * a * f) + (0.0316 * b) + (0.0457 * a) + (0.190 * f)
-    weight_kg = 10**log10_bw
-    return round(weight_kg * 1000, 2)  # Retornamos en gramos
+    return round((10**log10_bw) * 1000, 2)
 
-def generate_perinatology_report(data):
-    # Ejecutamos el cálculo automático
-    efw_calculado = calculate_hadlock_efw(data.bpd, data.ac, data.fl)
+async def generate_smart_report(data: FetalMeasurements):
+    api_key = os.getenv("GROQ_API_KEY")
+    efw = calculate_hadlock_efw(data.bpd, data.ac, data.fl)
 
-    # Análisis de desarrollo
-    status = "desarrollo acorde a edad gestacional"
-    if data.gestational_age_weeks > 0 and efw_calculado < 300 and data.gestational_age_weeks >= 20:
-        status = "alerta: peso por debajo del percentil esperado (RCIU?)"
+    prompt = f"""
+    Eres un experto Perinatólogo. Redacta un informe médico profesional basado en estos datos:
+    - Paciente: {data.patient_name}
+    - Edad Gestacional: {data.gestational_age_weeks} semanas
+    - Biometría: DBP {data.bpd}mm, CA {data.ac}mm, LF {data.fl}mm.
+    - Peso Fetal Estimado: {efw}g.
+    - Observaciones del doctor: {data.doctor_observations}
 
-    # Construcción del informe
-    report_text = (
-        f"INFORME MÉDICO DE PERINATOLOGÍA\n"
-        f"Paciente: {data.patient_name} | ID: {data.patient_id}\n"
-        f"Edad Gestacional: {data.gestational_age_weeks} semanas.\n\n"
-        f"HALLAZGOS BIOMÉTRICOS:\n"
-        f"- Diámetro Biparietal (DBP): {data.bpd} mm\n"
-        f"- Circunferencia Abdominal (CA): {data.ac} mm\n"
-        f"- Longitud Femoral (LF): {data.fl} mm\n"
-        f"- PESO FETAL ESTIMADO (HADLOCK): {efw_calculado} g.\n\n"
-        f"INTERPRETACIÓN: Se observa {status}."
-    )
+    El informe debe ser formal, estructurado y mencionar si los valores son normales para la edad gestacional.
+    Usa un tono clínico. No inventes datos adicionales.
+    """
 
-    if data.doctor_observations:
-        report_text += f"\n\nNOTAS DEL FACULTATIVO: {data.doctor_observations}"
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={
+                "model": "llama3-70b-8192",
+                "messages": [
+                    {"role": "system", "content": "Eres un asistente médico especializado en perinatología."},
+                    {"role": "user", "content": prompt}
+                ]
+            }
+        )
 
-    return {
-        "summary": report_text,
-        "recommendation": "Control de crecimiento en 2-4 semanas según protocolo."
-    }
+    if response.status_code == 200:
+        ai_message = response.json()['choices'][0]['message']['content']
+        return {
+            "summary": ai_message,
+            "recommendation": "Seguimiento protocolar según guías ISUOG."
+        }
+    else:
+        return {"summary": "Error generando informe IA", "recommendation": "Revisar conexión con API"}
