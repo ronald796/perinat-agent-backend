@@ -6,7 +6,12 @@ app = FastAPI()
 
 @app.get("/")
 def read_root():
-    return {"message": "Agente de Perinatologia Online"}
+    return {
+        "entorno": "Perinato-AI Node",
+        "fase": 2,
+        "status": "Ready",
+        "agente_ia": "Online"
+    }
 
 @app.post("/analyze")
 async def analyze_ultrasound(data: FetalMeasurements):
