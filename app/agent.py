@@ -29,11 +29,12 @@ async def generate_smart_report(data: FetalMeasurements):
             "https://api.groq.com/openai/v1/chat/completions",
             headers={"Authorization": f"Bearer {api_key}"},
             json={
-                "model": "llama3-70b-8192",
+                "model": "llama-3.3-70b-versatile",
                 "messages": [
                     {"role": "system", "content": "Eres un asistente médico especializado en perinatología."},
                     {"role": "user", "content": prompt}
-                ]
+                ],
+                "temperature": 0.5
             }
         )
 
@@ -44,4 +45,5 @@ async def generate_smart_report(data: FetalMeasurements):
             "recommendation": "Seguimiento protocolar según guías ISUOG."
         }
     else:
-        return {"summary": "Error generando informe IA", "recommendation": "Revisar conexión con API"}
+        print(f"ERROR DE GROQ: {response.text}")
+        return {"summary": f"Error de API: {response.status_code}", "recommendation": "Revisar la consola de PowerShell"}

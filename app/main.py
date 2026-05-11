@@ -33,7 +33,7 @@ async def upload_audio(file: UploadFile = File(...)):
     """
     Endpoint para recibir notas de voz del doctor y convertirlas en texto.
     """
-    if not file.filename.endswith(('.mp3', '.wav', '.m4a', '.webm')):
+    if not file.filename.lower().endswith(('.mp3', '.wav', '.m4a', '.webm', '.ogg', '.opus')):
         raise HTTPException(status_code=400, detail="Formato de audio no soportado")
 
     audio_content = await file.read()
