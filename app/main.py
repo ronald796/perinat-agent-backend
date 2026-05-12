@@ -1,10 +1,19 @@
 import uuid
 from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from .schemas import FetalMeasurements, AnalysisResponse
 from .agent import generate_smart_report
 from .audio_processor import transcribe_audio
 
-app = FastAPI()
+app = FastAPI(title="Perinato-AI Core")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 @app.get("/")
 def read_root():
