@@ -16,3 +16,15 @@ class AnalysisResponse(BaseModel):
     report_id: str
     summary: str
     recommendation: str
+
+class DicomData(BaseModel):
+    status: str
+    patient_name: str
+    patient_id: str
+    modality: str
+    manufacturer: Optional[str] = ""
+    gestational_age_weeks: Optional[int] = None
+    bpd: Optional[float] = None
+    ac: Optional[float] = None
+    fl: Optional[float] = None
+    message: str
