@@ -3,8 +3,8 @@ import io
 import pydicom
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from .schemas import FetalMeasurements, AnalysisResponse, DicomData
-from .agent import generate_smart_report
+from .schemas import FetalMeasurements, AnalysisResponse, DicomData, ReportRequest, ReportResponse
+from .agent import generate_structured_report
 from .audio_processor import transcribe_audio
 
 app = FastAPI(title="Perinato-AI Core")
@@ -21,22 +21,36 @@ app.add_middleware(
 def read_root():
     return {
         "entorno": "Perinato-AI Node",
-        "fase": 4,
+        "fase": 5,
         "status": "Ready",
         "agente_ia": "Online"
     }
 
-@app.post("/analyze", response_model=AnalysisResponse)
-async def analyze_ultrasound(data: FetalMeasurements):
+@app.post("/analyze", response_model=ReportResponse)
+async def analyze_ultrasound(data: ReportRequest):
     report_id = str(uuid.uuid4())[:8]
 
-    report = await generate_smart_report(data)
+    result = await generate_structured_report(data)
+
+    # Construir dict de secciones con los valores tal cual los envió el médico (AI no los toca)
+    secciones = {}
+    for field in ["obstetricos", "biometria", "anatomia", "funcional",
+                  "placenta", "ecocardiografia", "perfil_biofisico", "doppler"]:
+        section = getattr(data, field, None)
+        if section is not None:
+            secciones[field] = section.model_dump(exclude_none=True)
 
     return {
         "status": "success",
         "report_id": report_id,
-        "summary": report["summary"],
-        "recommendation": report["recommendation"]
+        "biometria_derivada": {
+            "efw_g": result["efw"],
+            "formula": result["formula"],
+            "eg_estimada_semanas": result["eg_estimada"],
+        },
+        "impresion_diagnostica": result["impresion_diagnostica"],
+        "recomendaciones": result["recomendaciones"],
+        "secciones": secciones,
     }
 
 @app.post("/upload-dicom", response_model=DicomData)
@@ -55,7 +69,6 @@ async def upload_dicom(file: UploadFile = File(...)):
     modality = str(ds.get("Modality", "US"))
     manufacturer = str(ds.get("Manufacturer", ""))
 
-    # Intentar leer biometría desde tags privados Esaote o tags estándar
     bpd = float(ds.get("BipariatalDiameter", 0) or 0) or None
     ac = float(ds.get("AbdominalCircumference", 0) or 0) or None
     fl = float(ds.get("FemurLength", 0) or 0) or None
@@ -75,14 +88,10 @@ async def upload_dicom(file: UploadFile = File(...)):
 
 @app.post("/upload-audio")
 async def upload_audio(file: UploadFile = File(...)):
-    """
-    Endpoint para recibir notas de voz del doctor y convertirlas en texto.
-    """
     if not file.filename.lower().endswith(('.mp3', '.wav', '.m4a', '.mp4', '.webm', '.ogg', '.opus')):
         raise HTTPException(status_code=400, detail="Formato de audio no soportado")
 
     audio_content = await file.read()
-
     texto_transcrito = await transcribe_audio(audio_content, file.filename)
 
     return {
