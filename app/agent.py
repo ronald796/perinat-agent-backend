@@ -23,7 +23,7 @@ def calculate_hadlock_efw(bpd_mm: float, ac_mm: float, fl_mm: float, hc_mm: floa
         # Hadlock 1985 – BPD + AC + FL
         log10_bw = 1.335 - (0.0034 * a * f) + (0.0316 * b) + (0.0457 * a) + (0.190 * f)
         formula = "Hadlock 3 parámetros (DBP+CA+FL)"
-    return round((10**log10_bw) * 1000, 2), formula
+    return round(10**log10_bw, 2), formula
 
 
 def estimate_ga_from_bpd(bpd_mm: float) -> float:
