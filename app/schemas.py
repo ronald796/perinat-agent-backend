@@ -28,6 +28,7 @@ class DicomData(BaseModel):
     manufacturer: Optional[str] = ""
     gestational_age_weeks: Optional[int] = None
     bpd: Optional[float] = None
+    hc: Optional[float] = None
     ac: Optional[float] = None
     fl: Optional[float] = None
     message: str

@@ -53,6 +53,37 @@ async def analyze_ultrasound(data: ReportRequest):
         "secciones": secciones,
     }
 
+def _parse_sr_biometry(ds):
+    out = {"bpd": None, "hc": None, "ac": None, "fl": None, "ga_weeks": None}
+
+    def walk(seq):
+        for item in seq:
+            if (getattr(item, "ValueType", "") == "NUM"
+                    and "ConceptNameCodeSequence" in item
+                    and "MeasuredValueSequence" in item):
+                name = str(item.ConceptNameCodeSequence[0].CodeMeaning).lower()
+                try:
+                    val = float(item.MeasuredValueSequence[0].NumericValue)
+                except Exception:
+                    continue
+                if "biparietal" in name:
+                    out["bpd"] = val
+                elif "head circumference" in name or "cefal" in name or "cabeza" in name:
+                    out["hc"] = val
+                elif "abdominal" in name:
+                    out["ac"] = val
+                elif "femur" in name or "fémur" in name:
+                    out["fl"] = val
+                elif "gestational" in name or "gestacional" in name:
+                    out["ga_weeks"] = val
+            if "ContentSequence" in item:
+                walk(item.ContentSequence)
+
+    if "ContentSequence" in ds:
+        walk(ds.ContentSequence)
+    return out
+
+
 @app.post("/upload-dicom", response_model=DicomData)
 async def upload_dicom(file: UploadFile = File(...)):
     if not file.filename.lower().endswith('.dcm'):
@@ -66,12 +97,10 @@ async def upload_dicom(file: UploadFile = File(...)):
 
     patient_name = str(ds.get("PatientName", "Anónimo")).replace("^", " ").strip()
     patient_id = str(ds.get("PatientID", "SIN-ID"))
-    modality = str(ds.get("Modality", "US"))
+    modality = str(ds.get("Modality", "SR"))
     manufacturer = str(ds.get("Manufacturer", ""))
 
-    bpd = float(ds.get("BipariatalDiameter", 0) or 0) or None
-    ac = float(ds.get("AbdominalCircumference", 0) or 0) or None
-    fl = float(ds.get("FemurLength", 0) or 0) or None
+    b = _parse_sr_biometry(ds)
 
     return {
         "status": "success",
@@ -79,10 +108,11 @@ async def upload_dicom(file: UploadFile = File(...)):
         "patient_id": patient_id,
         "modality": modality,
         "manufacturer": manufacturer,
-        "gestational_age_weeks": None,
-        "bpd": bpd,
-        "ac": ac,
-        "fl": fl,
+        "gestational_age_weeks": int(b["ga_weeks"]) if b["ga_weeks"] else None,
+        "bpd": b["bpd"],
+        "hc": b["hc"],
+        "ac": b["ac"],
+        "fl": b["fl"],
         "message": f"DICOM de {patient_name} cargado correctamente"
     }
 

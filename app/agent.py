@@ -7,41 +7,64 @@ from .schemas import ReportRequest
 
 
 def calculate_hadlock_efw(bpd_mm: float, ac_mm: float, fl_mm: float, hc_mm: float = None) -> tuple:
-    """
-    Hadlock 4-parámetros si hc disponible, 3-parámetros si no.
-    Retorna (efw_gramos, nombre_formula).
-    """
     b = bpd_mm / 10
     a = ac_mm / 10
     f = fl_mm / 10
     if hc_mm is not None:
         h = hc_mm / 10
-        # Hadlock 1985 – BPD + HC + AC + FL (medidas en cm)
         log10_bw = 1.3596 + 0.0064*h + 0.0424*a + 0.174*f + 0.00061*b*a - 0.00386*a*f
         formula = "Hadlock 4 parámetros (DBP+CC+CA+FL)"
     else:
-        # Hadlock 1985 – BPD + AC + FL
         log10_bw = 1.335 - (0.0034 * a * f) + (0.0316 * b) + (0.0457 * a) + (0.190 * f)
         formula = "Hadlock 3 parámetros (DBP+CA+FL)"
     return round(10**log10_bw, 2), formula
 
 
 def estimate_ga_from_bpd(bpd_mm: float) -> float:
-    """Estima EG en semanas a partir del DBP usando curva de Hadlock (BPD en cm)."""
     b = bpd_mm / 10
     return round(9.54 + 1.482 * b + 0.1676 * b**2, 1)
 
 
-def _fmt_section(title: str, obj) -> str:
-    if obj is None:
-        return ""
-    data = obj.model_dump(exclude_none=True)
-    if not data:
-        return ""
-    lines = [f"\n## {title}"]
-    for k, v in data.items():
-        lines.append(f"  {k}: {v}")
-    return "\n".join(lines)
+_SECTION_LABELS = {
+    "obstetricos":     "Datos obstétricos",
+    "biometria":       "Biometría",
+    "anatomia":        "Anatomía fetal",
+    "funcional":       "Parámetros funcionales",
+    "placenta":        "Placenta y cordón",
+    "ecocardiografia": "Ecocardiografía",
+    "perfil_biofisico":"Perfil biofísico",
+    "doppler":         "Doppler",
+}
+
+
+def build_data_inventory(data: ReportRequest) -> tuple:
+    """
+    Devuelve (datos_provistos, no_reportado).
+    datos_provistos: lista de strings con cada campo que tiene valor real.
+    no_reportado:    lista de nombres de secciones que llegaron vacías o null.
+    """
+    datos = [
+        f"Paciente: {data.patient_name} (ID: {data.patient_id})",
+        f"Edad gestacional clínica: {data.gestational_age_weeks} semanas",
+    ]
+    if data.doctor_observations and data.doctor_observations.strip():
+        datos.append(f"Observaciones del médico: {data.doctor_observations.strip()}")
+
+    no_reportado = []
+
+    for field, title in _SECTION_LABELS.items():
+        section = getattr(data, field, None)
+        if section is None:
+            no_reportado.append(title)
+            continue
+        section_data = section.model_dump(exclude_none=True)
+        if not section_data:
+            no_reportado.append(title)
+            continue
+        for k, v in section_data.items():
+            datos.append(f"{title} → {k}: {v}")
+
+    return datos, no_reportado
 
 
 async def generate_structured_report(data: ReportRequest) -> dict:
@@ -49,9 +72,9 @@ async def generate_structured_report(data: ReportRequest) -> dict:
     if not api_key:
         raise HTTPException(status_code=500, detail="GROQ_API_KEY no configurada en el servidor")
 
-    # Calcular biometría derivada
+    # Biometría derivada
     bio = data.biometria
-    efw, formula = (None, None)
+    efw, formula = None, None
     eg_estimada = None
 
     if bio and bio.dbp and bio.ca and bio.femur:
@@ -59,43 +82,55 @@ async def generate_structured_report(data: ReportRequest) -> dict:
     if bio and bio.dbp:
         eg_estimada = estimate_ga_from_bpd(bio.dbp)
 
-    # Construir resumen de datos para el prompt
-    sections_text = (
-        _fmt_section("Datos obstétricos", data.obstetricos)
-        + _fmt_section("Biometría (valores en mm salvo talla_cm)", data.biometria)
-        + _fmt_section("Anatomía fetal", data.anatomia)
-        + _fmt_section("Parámetros funcionales", data.funcional)
-        + _fmt_section("Placenta y cordón", data.placenta)
-        + _fmt_section("Ecocardiografía", data.ecocardiografia)
-        + _fmt_section("Perfil biofísico", data.perfil_biofisico)
-        + _fmt_section("Doppler", data.doppler)
+    # Inventario de datos
+    datos_provistos, no_reportado = build_data_inventory(data)
+
+    efw_entry = (
+        f"Peso fetal estimado ({formula}): {efw} g"
+        if efw else
+        "Peso fetal estimado: NO CALCULABLE — biometría insuficiente (faltan dbp, ca o femur)"
+    )
+    datos_provistos.append(efw_entry)
+
+    datos_str = "\n".join(f"  - {d}" for d in datos_provistos)
+    no_rep_str = (
+        "\n".join(f"  - {n}" for n in no_reportado)
+        if no_reportado else "  (ninguna sección ausente)"
     )
 
-    efw_line = f"- Peso fetal estimado ({formula}): {efw} g" if efw else "- Peso fetal estimado: no calculable (datos biométricos insuficientes)"
-    eg_line = f"- EG estimada por DBP: {eg_estimada} semanas" if eg_estimada else ""
-    obs_line = f"- Observaciones del médico: {data.doctor_observations}" if data.doctor_observations else ""
+    system_msg = (
+        "Eres un asistente clínico de perinatología de alta precisión. "
+        "Tu única función es analizar EXACTAMENTE los datos que se te presentan. "
+        "NUNCA inventas, asumes, inferies ni completas información no presente. "
+        "Respondes SOLO con JSON válido, sin texto adicional."
+    )
 
-    prompt = f"""Eres un perinatólogo experto. Analiza el siguiente estudio ultrasonográfico y genera una evaluación clínica.
+    prompt = f"""Analiza este estudio ultrasonográfico perinatal con los datos disponibles.
 
-PACIENTE: {data.patient_name} | ID: {data.patient_id}
-EDAD GESTACIONAL CLÍNICA: {data.gestational_age_weeks} semanas
-{efw_line}
-{eg_line}
-{obs_line}
-{sections_text}
+=== DATOS PROVISTOS — los ÚNICOS que puedes mencionar ===
+{datos_str}
 
-REGLAS ABSOLUTAS:
-1. NO inventes ni modifiques ningún valor medido. Lo que no esté reportado arriba se describe como "no reportado".
-2. Evalúa si la biometría es normal para la edad gestacional indicada.
-3. Si hay hallazgos anormales, nómbralos explícitamente.
-4. Las recomendaciones deben ser concretas y etiquetadas como sugerencias para el médico tratante.
+=== SECCIONES NO REPORTADAS EN ESTE ESTUDIO — PROHIBIDO mencionarlas ===
+{no_rep_str}
 
-Responde ÚNICAMENTE con un objeto JSON válido con estas dos claves:
+=== REGLAS DE SEGURIDAD CLÍNICA — obligatorias, sin excepciones ===
+1. Solo puedes mencionar datos presentes en DATOS PROVISTOS. Ni uno más.
+2. PROHIBIDO mencionar, inferir, asumir o declarar como normal cualquier hallazgo de las
+   secciones NO REPORTADAS (presentación, placenta, anatomía, Doppler, líquido amniótico,
+   ecocardiografía, perfil biofísico, etc.).
+3. NUNCA uses frases como "el resto es normal", "sin otras alteraciones", "evaluación normal
+   de estructuras no evaluadas", ni ninguna generalización sobre lo no reportado.
+4. Si falta biometría, indica únicamente que el peso no pudo calcularse; no rellenes con
+   hallazgos clínicos que no fueron registrados.
+5. Si los datos provistos son escasos, la impresión debe reflejar esa limitación
+   explícitamente: qué no se evaluó y qué falta para completar el estudio.
+6. Impresión diagnóstica y recomendaciones se basan EXCLUSIVAMENTE en DATOS PROVISTOS.
+
+Responde ÚNICAMENTE con este JSON (sin texto antes ni después):
 {{
-  "impresion_diagnostica": ["frase 1", "frase 2", ...],
-  "recomendaciones": ["recomendación 1", "recomendación 2", ...]
-}}
-No incluyas texto fuera del JSON."""
+  "impresion_diagnostica": ["frase basada solo en datos provistos", ...],
+  "recomendaciones": ["recomendación concreta para el médico tratante", ...]
+}}"""
 
     try:
         async with httpx.AsyncClient() as client:
@@ -105,10 +140,10 @@ No incluyas texto fuera del JSON."""
                 json={
                     "model": "llama-3.3-70b-versatile",
                     "messages": [
-                        {"role": "system", "content": "Eres un asistente médico especializado en perinatología. Respondes SOLO con JSON válido, sin texto adicional."},
+                        {"role": "system", "content": system_msg},
                         {"role": "user", "content": prompt}
                     ],
-                    "temperature": 0.3,
+                    "temperature": 0.2,
                     "response_format": {"type": "json_object"}
                 },
                 timeout=60.0
@@ -121,7 +156,6 @@ No incluyas texto fuera del JSON."""
 
     ai_text = response.json()["choices"][0]["message"]["content"]
 
-    # Parse JSON de forma segura
     try:
         ai_json = json.loads(ai_text)
     except json.JSONDecodeError:
@@ -145,6 +179,6 @@ No incluyas texto fuera del JSON."""
         ),
         "recomendaciones": as_list(
             ai_json.get("recomendaciones"),
-            "Seguimiento clínico habitual según protocolo."
+            "Completar el estudio con biometría y evaluación anatómica."
         ),
     }
